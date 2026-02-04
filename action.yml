@@ -188,6 +188,8 @@ runs:
         fun_root="$FUN_INSTALL_DIR"
         echo "$FUN_INSTALL_DIR/bin" >> "$GITHUB_PATH"
         echo "FUN_STDLIB_DIR=$FUN_INSTALL_DIR/share/fun" >> "$GITHUB_ENV"
+        echo "FUN_CC=gcc" >> "$GITHUB_ENV"
+        echo "FUN_CC_ARGS=" >> "$GITHUB_ENV"
         echo "FUN_ROOT=$fun_root" >> "$GITHUB_ENV"
 
     - name: Download and extract (windows)
