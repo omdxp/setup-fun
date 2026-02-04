@@ -1,0 +1,219 @@
+name: Setup Fun
+description: Download and add the Fun compiler to PATH
+
+inputs:
+  version:
+    description: Release tag (e.g. v1.2.3) or "latest"
+    required: false
+    default: latest
+  repo:
+    description: GitHub repo in owner/name format
+    required: false
+    default: "omdxp/fun"
+  token:
+    description: GitHub token for API requests
+    required: false
+    default: ""
+  install-dir:
+    description: Directory to install the release bundle
+    required: false
+    default: ""
+
+outputs:
+  fun-path:
+    description: Full path to the fun binary
+    value: ${{ steps.outputs_unix.outputs.fun-path || steps.outputs_win.outputs.fun-path }}
+  version:
+    description: Resolved release tag
+    value: ${{ steps.outputs_unix.outputs.version || steps.outputs_win.outputs.version }}
+  install-dir:
+    description: Installation root directory
+    value: ${{ steps.outputs_unix.outputs.install-dir || steps.outputs_win.outputs.install-dir }}
+  target:
+    description: Resolved release target
+    value: ${{ steps.outputs_unix.outputs.target || steps.outputs_win.outputs.target }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve install dir (unix)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        set -euo pipefail
+        install="${{ inputs.install-dir }}"
+        if [ -z "$install" ]; then
+          install="${RUNNER_TEMP}/fun"
+        fi
+        mkdir -p "$install"
+        echo "FUN_INSTALL_DIR=$install" >> "$GITHUB_ENV"
+
+    - name: Resolve install dir (windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $install = "${{ inputs.install-dir }}"
+        if (-not $install) {
+          $install = Join-Path $env:RUNNER_TEMP "fun"
+        }
+        New-Item -ItemType Directory -Force -Path $install | Out-Null
+        "FUN_INSTALL_DIR=$install" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+    - name: Resolve platform target (unix)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        set -euo pipefail
+        arch="$(uname -m)"
+        case "$arch" in
+          x86_64|amd64) arch="x86_64" ;;
+          arm64|aarch64) arch="aarch64" ;;
+          *) echo "Unsupported arch: $arch" >&2; exit 1 ;;
+        esac
+        os="$(uname -s)"
+        case "$os" in
+          Linux) target="${arch}-linux-gnu" ;;
+          Darwin) target="${arch}-macos" ;;
+          *) echo "Unsupported OS: $os" >&2; exit 1 ;;
+        esac
+        echo "FUN_TARGET=$target" >> "$GITHUB_ENV"
+
+    - name: Resolve platform target (windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $arch = $env:PROCESSOR_ARCHITECTURE
+        switch ($arch) {
+          "AMD64" { $arch = "x86_64" }
+          "ARM64" { $arch = "aarch64" }
+          default { throw "Unsupported arch: $arch" }
+        }
+        $target = "$arch-windows-gnu"
+        "FUN_TARGET=$target" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+    - name: Resolve release asset (unix)
+      if: runner.os != 'Windows'
+      shell: bash
+      env:
+        FUN_VERSION_INPUT: ${{ inputs.version }}
+        FUN_REPO: ${{ inputs.repo }}
+        FUN_TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+        ver="$FUN_VERSION_INPUT"
+        repo="$FUN_REPO"
+        token="$FUN_TOKEN"
+        if [ -z "$repo" ]; then
+          repo="$GITHUB_REPOSITORY"
+        fi
+        if [ -z "$token" ]; then
+          token="$GITHUB_TOKEN"
+        fi
+        if [ -z "$ver" ] || [ "$ver" = "latest" ]; then
+          api="https://api.github.com/repos/$repo/releases/latest"
+        else
+          api="https://api.github.com/repos/$repo/releases/tags/$ver"
+        fi
+        auth=()
+        if [ -n "$token" ]; then
+          auth=( -H "Authorization: Bearer $token" )
+        fi
+        json=$(curl -fsSL -H "Accept: application/vnd.github+json" "${auth[@]}" "$api")
+        tag=$(JSON="$json" python3 -c 'import json,os; data=json.loads(os.environ.get("JSON","{}") or "{}"); print(data.get("tag_name",""))')
+        if [ -z "$tag" ]; then
+          echo "Failed to resolve release tag" >&2
+          exit 1
+        fi
+        asset_name="fun-$FUN_TARGET.tar.gz"
+        asset_url=$(JSON="$json" ASSET_NAME="$asset_name" python3 -c 'import json,os; data=json.loads(os.environ.get("JSON","{}") or "{}"); name=os.environ.get("ASSET_NAME"); print(next((a.get("browser_download_url","") for a in data.get("assets",[]) if a.get("name")==name), ""))')
+        if [ -z "$asset_url" ]; then
+          echo "Release asset not found: $asset_name" >&2
+          exit 1
+        fi
+        echo "FUN_VERSION=$tag" >> "$GITHUB_ENV"
+        echo "FUN_ASSET_NAME=$asset_name" >> "$GITHUB_ENV"
+        echo "FUN_ASSET_URL=$asset_url" >> "$GITHUB_ENV"
+
+    - name: Resolve release asset (windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      env:
+        FUN_VERSION_INPUT: ${{ inputs.version }}
+        FUN_REPO: ${{ inputs.repo }}
+        FUN_TOKEN: ${{ inputs.token }}
+      run: |
+        $ver = $env:FUN_VERSION_INPUT
+        $repo = $env:FUN_REPO
+        $token = $env:FUN_TOKEN
+        if (-not $repo) { $repo = $env:GITHUB_REPOSITORY }
+        if (-not $token) { $token = $env:GITHUB_TOKEN }
+        if (-not $ver -or $ver -eq "latest") {
+          $api = "https://api.github.com/repos/$repo/releases/latest"
+        } else {
+          $api = "https://api.github.com/repos/$repo/releases/tags/$ver"
+        }
+        $headers = @{ Accept = "application/vnd.github+json" }
+        if ($token) { $headers.Authorization = "Bearer $token" }
+        $rel = Invoke-RestMethod -Headers $headers -Uri $api
+        $tag = $rel.tag_name
+        if (-not $tag) { throw "Failed to resolve release tag" }
+        $target = $env:FUN_TARGET
+        $asset = $rel.assets | Where-Object { $_.name -like "fun-$target-*.msi" } | Select-Object -First 1
+        if (-not $asset) { throw "Release asset not found for target $target" }
+        "FUN_VERSION=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append
+        "FUN_ASSET_NAME=$($asset.name)" | Out-File -FilePath $env:GITHUB_ENV -Append
+        "FUN_ASSET_URL=$($asset.browser_download_url)" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+    - name: Download and extract (unix)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        set -euo pipefail
+        archive="${RUNNER_TEMP}/${FUN_ASSET_NAME}"
+        curl -fsSL -o "$archive" "$FUN_ASSET_URL"
+        tar -xzf "$archive" -C "$FUN_INSTALL_DIR"
+        fun_root="$FUN_INSTALL_DIR/fun-$FUN_TARGET"
+        if [ ! -x "$fun_root/bin/fun" ]; then
+          echo "fun binary not found at $fun_root/bin/fun" >&2
+          exit 1
+        fi
+        echo "$fun_root/bin" >> "$GITHUB_PATH"
+        echo "FUN_STDLIB_DIR=$fun_root/share/fun" >> "$GITHUB_ENV"
+        echo "FUN_ROOT=$fun_root" >> "$GITHUB_ENV"
+
+    - name: Download and extract (windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $archive = Join-Path $env:RUNNER_TEMP $env:FUN_ASSET_NAME
+        Invoke-WebRequest -Uri $env:FUN_ASSET_URL -OutFile $archive
+        $install = $env:FUN_INSTALL_DIR
+        msiexec /a $archive /qn INSTALLFOLDER="$install\fun" TARGETDIR="$install"
+        $funExe = Get-ChildItem -Path $install -Recurse -Filter fun.exe | Select-Object -First 1
+        if (-not $funExe) { throw "fun.exe not found after extraction" }
+        $funRoot = Split-Path -Path $funExe.FullName -Parent | Split-Path
+        Add-Content -Path $env:GITHUB_PATH -Value (Split-Path -Path $funExe.FullName -Parent)
+        "FUN_STDLIB_DIR=$funRoot\share\fun" | Out-File -FilePath $env:GITHUB_ENV -Append
+        "FUN_ROOT=$funRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+    - name: Export outputs (unix)
+      id: outputs_unix
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "fun-path=$FUN_ROOT/bin/fun" >> "$GITHUB_OUTPUT"
+        echo "version=$FUN_VERSION" >> "$GITHUB_OUTPUT"
+        echo "install-dir=$FUN_INSTALL_DIR" >> "$GITHUB_OUTPUT"
+        echo "target=$FUN_TARGET" >> "$GITHUB_OUTPUT"
+
+    - name: Export outputs (windows)
+      id: outputs_win
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $funExe = Get-Command fun.exe | Select-Object -ExpandProperty Source -ErrorAction Stop
+        "fun-path=$funExe" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        "version=$env:FUN_VERSION" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        "install-dir=$env:FUN_INSTALL_DIR" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        "target=$env:FUN_TARGET" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
