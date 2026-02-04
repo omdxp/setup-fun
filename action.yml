@@ -173,12 +173,21 @@ runs:
         curl -fsSL -o "$archive" "$FUN_ASSET_URL"
         tar -xzf "$archive" -C "$FUN_INSTALL_DIR"
         fun_root="$FUN_INSTALL_DIR/fun-$FUN_TARGET"
-        if [ ! -x "$fun_root/bin/fun" ]; then
-          echo "fun binary not found at $fun_root/bin/fun" >&2
+        if [ ! -x "$fun_root/install.sh" ]; then
+          echo "install.sh not found at $fun_root/install.sh" >&2
           exit 1
         fi
-        echo "$fun_root/bin" >> "$GITHUB_PATH"
-        echo "FUN_STDLIB_DIR=$fun_root/share/fun" >> "$GITHUB_ENV"
+        chmod +x "$fun_root/install.sh" || true
+        chmod +x "$fun_root/uninstall.sh" || true
+        "$fun_root/install.sh" --prefix "$FUN_INSTALL_DIR"
+        fun_bin="$FUN_INSTALL_DIR/bin/fun"
+        if [ ! -x "$fun_bin" ]; then
+          echo "fun binary not found after install" >&2
+          exit 1
+        fi
+        fun_root="$FUN_INSTALL_DIR"
+        echo "$FUN_INSTALL_DIR/bin" >> "$GITHUB_PATH"
+        echo "FUN_STDLIB_DIR=$FUN_INSTALL_DIR/share/fun" >> "$GITHUB_ENV"
         echo "FUN_ROOT=$fun_root" >> "$GITHUB_ENV"
 
     - name: Download and extract (windows)
